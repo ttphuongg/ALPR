@@ -46,51 +46,11 @@ class InfoPanel(ctk.CTkFrame):
 
         self._plate_label = ctk.CTkLabel(
             plate_card,
-            text="– – – – – – – –",
+            text=" ",
             font=("Consolas", 32, "bold"),
             text_color=_ACCENT,
         )
         self._plate_label.pack(pady=(2, 14))
-
-        # Hàng thông tin 1: Track ID + OCR Hiện tại
-        info_row1 = ctk.CTkFrame(self, fg_color="transparent")
-        info_row1.pack(fill="x", padx=14, pady=(0, 10))
-        info_row1.columnconfigure(0, weight=1)
-        info_row1.columnconfigure(1, weight=1)
-
-        # Thẻ Track ID
-        track_card = ctk.CTkFrame(info_row1, fg_color=_SURFACE2, corner_radius=10)
-        track_card.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ctk.CTkLabel(
-            track_card,
-            text="TRACK ID",
-            font=("Segoe UI", 9, "bold"),
-            text_color=_TEXT_MUTED,
-        ).pack(pady=(10, 2))
-        self._track_id_label = ctk.CTkLabel(
-            track_card,
-            text="—",
-            font=("Segoe UI", 18, "bold"),
-            text_color=_TEXT,
-        )
-        self._track_id_label.pack(pady=(2, 10))
-
-        # Thẻ OCR Hiện Tại
-        ocr_card = ctk.CTkFrame(info_row1, fg_color=_SURFACE2, corner_radius=10)
-        ocr_card.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(
-            ocr_card,
-            text="OCR HIỆN TẠI",
-            font=("Segoe UI", 9, "bold"),
-            text_color=_TEXT_MUTED,
-        ).pack(pady=(10, 2))
-        self._current_ocr_label = ctk.CTkLabel(
-            ocr_card,
-            text="—",
-            font=("Segoe UI", 18, "bold"),
-            text_color=_TEXT,
-        )
-        self._current_ocr_label.pack(pady=(2, 10))
 
         # Hàng thông tin 2: Trạng thái + Thời gian
         info_row2 = ctk.CTkFrame(self, fg_color="transparent")
@@ -145,14 +105,10 @@ class InfoPanel(ctk.CTkFrame):
         # Cập nhật tiêu đề và màu sắc biển số lớn
         if is_final:
             self._plate_header_label.configure(text="BIỂN SỐ XE (ĐÃ XÁC NHẬN)", text_color=_SUCCESS)
-            self._plate_label.configure(text=plate if plate else "– – – – – – – –", text_color=_ACCENT)
+            self._plate_label.configure(text=plate if plate else " ", text_color=_ACCENT)
         else:
             self._plate_header_label.configure(text="BIỂN SỐ XE (ĐANG THEO DÕI)", text_color=_TEXT_MUTED)
-            self._plate_label.configure(text=plate if plate else "– – – – – – – –", text_color=_TEXT)
-
-        # Cập nhật Track ID và OCR hiện tại
-        self._track_id_label.configure(text=f"#{track_id}" if track_id else "—")
-        self._current_ocr_label.configure(text=current_ocr if current_ocr else "—")
+            self._plate_label.configure(text=plate if plate else " ", text_color=_TEXT)
 
         # Trạng thái
         if event == "IN":
@@ -171,8 +127,6 @@ class InfoPanel(ctk.CTkFrame):
 
     def clear(self) -> None:
         self._plate_header_label.configure(text="BIỂN SỐ XE", text_color=_TEXT_MUTED)
-        self._plate_label.configure(text="– – – – – – – –", text_color=_ACCENT)
-        self._track_id_label.configure(text="—")
-        self._current_ocr_label.configure(text="—")
+        self._plate_label.configure(text=" ", text_color=_ACCENT)
         self._status_label.configure(text="—", text_color=_TEXT_MUTED)
         self._time_label.configure(text="—")

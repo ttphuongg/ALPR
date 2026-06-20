@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# Màu sắc toàn cục 
 _BG        = "#0d1117"
 _SURFACE   = "#161b22"
 _SURFACE2  = "#21262d"
@@ -37,8 +36,6 @@ class ParkingApp(ctk.CTk):
 
         # Trạng thái nội bộ 
         self._current_frame      = None
-        self._annotated_frame    = None
-        self._annotated_time     = 0.0
         self._frame_lock         = threading.Lock()
 
         # Services (khởi tạo lazy)
@@ -74,13 +71,6 @@ class ParkingApp(ctk.CTk):
             font=("Segoe UI", 17, "bold"),
             text_color=_ACCENT,
         ).pack(side="left")
-
-        ctk.CTkLabel(
-            left_box,
-            text="  |  Smart Parking Management",
-            font=("Segoe UI", 11),
-            text_color=_TEXT_MUTED,
-        ).pack(side="left", padx=(4, 0))
 
         # Nhãn trạng thái hệ thống
         self._status_label = ctk.CTkLabel(
@@ -120,15 +110,12 @@ class ParkingApp(ctk.CTk):
         )
         self.history_panel.pack(fill="both", expand=True, pady=(10, 0))
 
-        # Nạp dữ liệu lịch sử ban đầu từ DB
-        self._refresh_history()
-
     # Load models
 
     def _load_models_background(self) -> None:
         def _worker():
             from services.inference import PlateInference
-            self._set_status("⏳  Đang tải models AI (lần đầu có thể mất vài giây)...")
+            self._set_status("Đang tải models (lần đầu có thể mất vài giây)...")
             try:
                 inference = PlateInference()
                 self._inference = inference
@@ -153,10 +140,6 @@ class ParkingApp(ctk.CTk):
 
     def _on_plate_detected(self, result: dict) -> None:
         is_final = result.get("is_final", False)
-        with self._frame_lock:
-            if result.get("annotated_frame") is not None:
-                self._annotated_frame = result.get("annotated_frame")
-                self._annotated_time  = time.time()
 
         # Cập nhật GUI trên main thread
         self.after(0, self.info_panel.update_plate, result)
@@ -167,12 +150,7 @@ class ParkingApp(ctk.CTk):
 
     def _poll_video_frame(self) -> None:
         with self._frame_lock:
-            elapsed   = time.time() - self._annotated_time
-            use_annot = (
-                self._annotated_frame is not None
-                and elapsed < config.ANNOTATED_DISPLAY_DURATION
-            )
-            frame = self._annotated_frame if use_annot else self._current_frame
+            frame = self._current_frame
 
         if frame is not None:
             self.video_panel.update_frame(frame)
@@ -218,7 +196,7 @@ class ParkingApp(ctk.CTk):
             return
 
         if self._inference is None:
-            self._set_status("Models AI chưa tải xong, vui lòng đợi...")
+            self._set_status("Models chưa tải xong, vui lòng đợi...")
             return
 
         if self._video_service and self._video_service.is_running():
@@ -248,8 +226,7 @@ class ParkingApp(ctk.CTk):
             self._video_service = None
 
         with self._frame_lock:
-            self._annotated_frame = None
-            self._current_frame   = None
+            self._current_frame = None
 
         self.video_panel.show_placeholder()
         self._set_status("Đã dừng")
@@ -263,11 +240,10 @@ class ParkingApp(ctk.CTk):
             self._set_status("Đã xóa lịch sử nhận diện")
             logger.info("All logs cleared by user.")
 
-    # Tiện ích 
-
     def set_db(self, db) -> None:
-
         self._db = db
+        # Tải dữ liệu cũ từ DB ngay khi nhận kết nối
+        self._refresh_history()
 
     def _get_db(self):
         return getattr(self, "_db", None)

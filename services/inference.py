@@ -55,7 +55,7 @@ class PlateInference:
             xyxy = boxes.xyxy[best_idx].cpu().numpy()
             x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
 
-            # Giới hạn và mở rộng bbox (padding 5%) để tránh cắt lẹm mép chữ
+            # Giới hạn và mở rộng bbox
             h, w = frame.shape[:2]
             pad_x = int(0.05 * (x2 - x1))
             pad_y = int(0.05 * (y2 - y1))

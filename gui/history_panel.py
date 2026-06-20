@@ -216,10 +216,5 @@ class HistoryPanel(ctk.CTkFrame):
     # Xóa lịch sử 
 
     def _confirm_clear(self) -> None:
-
-        answer = messagebox.askyesno(
-            title="Xác nhận xóa",
-            message="Bạn có chắc muốn xóa toàn bộ lịch sử nhận diện không?",
-        )
-        if answer and self._on_clear:
+        if self._on_clear:
             self._on_clear()

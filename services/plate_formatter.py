@@ -71,3 +71,17 @@ def format_vietnamese_plate(raw_chars, is_two_lines: bool) -> str:
 
         logger.debug("format_vietnamese_plate: không khớp mẫu nào, trả về chuỗi gốc: '%s'", text)
         return text  # Bất khả kháng thì trả về chuỗi gốc
+
+def is_valid_format(plate: str) -> bool:
+    """Kiểm tra xem biển số có đúng chuẩn cơ bản không (2 số đầu, chữ cái thứ 3, đủ độ dài)."""
+    if not plate:
+        return False
+    # Bỏ các ký tự định dạng để xét chuỗi thuần
+    text = re.sub(r"[^A-Z0-9]", "", plate.upper())
+    
+    # Chuẩn VN ngắn nhất là 7 ký tự (VD: 30K1234), dài nhất 9 ký tự (VD: 51LD12345)
+    if len(text) < 7:
+        return False
+        
+    # Bắt buộc: 2 ký tự đầu là số, ký tự thứ 3 là chữ cái
+    return bool(re.match(r"^\d{2}[A-Z]", text))

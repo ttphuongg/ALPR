@@ -55,14 +55,14 @@ class VideoPanel(ctk.CTkFrame):
             text_color=_TEXT_MUTED,
         ).pack(side="left", padx=14, pady=10)
 
-        # Thanh điều khiển (Pack trước canvas để tránh bị đẩy khi canvas thay đổi kích thước)
+        # Thanh điều khiển 
         ctrl_bar = ctk.CTkFrame(
             self, fg_color=_SURFACE2, corner_radius=0, height=58
         )
         ctrl_bar.pack(fill="x", side="bottom")
         ctrl_bar.pack_propagate(False)
 
-        # Vùng hiển thị video (nền đen) - Pack sau để chiếm phần không gian còn lại ở giữa
+        # Vùng hiển thị video
         self._canvas_frame = ctk.CTkFrame(
             self, fg_color="#000000", corner_radius=0
         )
@@ -154,9 +154,8 @@ class VideoPanel(ctk.CTkFrame):
         self._video_path = path
         filename = path.replace("\\", "/").split("/")[-1]
         self._path_label.configure(text=f"📄  {filename}")
-        self._video_started = False  # Reset để placeholder tắt khi video mới bắt đầu
+        self._video_started = False  
 
-        # Đọc và hiển thị frame đầu tiên làm nền
         if path:
             cap = cv2.VideoCapture(path)
             if cap.isOpened():
@@ -168,7 +167,6 @@ class VideoPanel(ctk.CTkFrame):
 
     def update_frame(self, frame: np.ndarray) -> None:
         try:
-            # Ẩn placeholder khi frame đầu tiên đến
             if not self._video_started:
                 self._placeholder_frame.place_forget()
                 self._video_started = True
@@ -201,11 +199,9 @@ class VideoPanel(ctk.CTkFrame):
             self._photo = photo  # Giữ reference
 
         except Exception:
-            # Bỏ qua lỗi hiển thị frame đơn lẻ để không crash app
             pass
 
     def show_placeholder(self) -> None:
-        """Hiện lại ảnh nền video đầu tiên (hoặc placeholder nếu không có video)."""
         if self._video_path:
             cap = cv2.VideoCapture(self._video_path)
             if cap.isOpened():

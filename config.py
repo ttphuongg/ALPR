@@ -27,7 +27,7 @@ DUPLICATE_TIMEOUT = 5     # Giây tối thiểu giữa 2 lần ghi cùng biển 
 TRACK_TIMEOUT = 1.5       # Giây không thấy xe thì kết thúc track
 TRACK_IOU_THRESHOLD = 0.2 # Ngưỡng IoU đè lên nhau để xác định cùng 1 xe (nới lỏng cho biển số nhỏ)
 MIN_TRACK_FRAMES = 5      # Số frame tối thiểu để hợp lệ
-MIN_OCR_DETECTIONS = 3    # Số lần đọc OCR tối thiểu trong track
+MIN_OCR_DETECTIONS = 5    # Số lần đọc OCR tối thiểu trong track (tăng ngưỡng chốt)
 
 # Anti-Duplicate Layer (sau Tracking)
 ANTI_DUPLICATE_SECONDS = 30      # Cùng biển số chỉ được ghi DB tối đa 1 lần / 30 giây

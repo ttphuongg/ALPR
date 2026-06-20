@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Callable
 
 import config
+from services.plate_formatter import is_valid_format
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +122,15 @@ class VideoService:
         """Bỏ dấu gạch ngang / chấm / khoảng trắng để so sánh thuần ký tự."""
         return re.sub(r"[^A-Z0-9]", "", plate.upper())
 
-    def _finish_track(self, track: dict) -> None:
+    def _finish_track(self, track: dict, early_lock: bool = False) -> None:
+        if track.get("is_logged"):
+            return
+            
         ocr_list = track["ocr_results"]
         if not ocr_list:
             return
         
-        voted_plate = self._vote_plate(ocr_list)
+        voted_plate = track.get("locked_plate") or self._vote_plate(ocr_list)
         if not voted_plate:
             return
         
@@ -134,28 +138,26 @@ class VideoService:
         total_detections = len(ocr_list)
         
         logger.info(
-            "Track #%d finished. Total frames=%d, OCR detections=%d, ocr_results=%s, voted=%s",
-            track["track_id"], total_frames, total_detections, ocr_list, voted_plate
+            "Track #%d %s. frames=%d, OCRs=%d, voted=%s",
+            track["track_id"], "early locked" if early_lock else "finished",
+            total_frames, total_detections, voted_plate
         )
         
-        if total_frames < config.MIN_TRACK_FRAMES or total_detections < config.MIN_OCR_DETECTIONS:
-            logger.info(
-                "Track #%d discarded (frames %d < %d or detections %d < %d)",
-                track["track_id"], total_frames, config.MIN_TRACK_FRAMES,
-                total_detections, config.MIN_OCR_DETECTIONS
-            )
-            return
+        if not early_lock:
+            if total_frames < config.MIN_TRACK_FRAMES or total_detections < config.MIN_OCR_DETECTIONS:
+                logger.info("Track #%d discarded", track["track_id"])
+                return
         
         event_type = self._determine_event(voted_plate)
         detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- Anti-Duplicate Layer (fuzzy matching) ---
+        # --- Anti-Duplicate Layer ---
         now = time.time()
         voted_norm = self._normalize_plate(voted_plate)
         duplicate_of = None
         for saved_plate, saved_time in self._recent_plates.items():
             if (now - saved_time) >= config.ANTI_DUPLICATE_SECONDS:
-                continue  # Hết thời gian bảo vệ, bỏ qua
+                continue
             saved_norm = self._normalize_plate(saved_plate)
             ratio = difflib.SequenceMatcher(None, voted_norm, saved_norm).ratio()
             if ratio >= config.PLATE_SIMILARITY_THRESHOLD:
@@ -163,18 +165,16 @@ class VideoService:
                 break
 
         if duplicate_of is not None:
-            logger.info(
-                "Track #%d DUPLICATE skipped: '%s' ≈ '%s' (%.0f%% giống, %.1fs trước)",
-                track["track_id"], voted_plate, duplicate_of[0],
-                duplicate_of[2] * 100, duplicate_of[1],
-            )
+            logger.info("Track #%d DUPLICATE skipped", track["track_id"])
+            track["is_logged"] = True
             return
-        # -----------------------------------------------
 
-        # Ghi nhận duy nhất một lần vào database khi kết thúc track
         success = self.db_handler.insert_log(voted_plate, event_type, detect_time)
         if success:
             self._recent_plates[voted_plate] = now
+            
+        track["is_logged"] = True
+        track["logged_event"] = event_type
         
         annotated = None
         if track.get("last_frame") is not None and track.get("bbox") is not None:
@@ -192,6 +192,7 @@ class VideoService:
                 "detect_time":     detect_time,
                 "annotated_frame": annotated,
                 "is_final":        True,
+                "just_logged":     success,
             })
         except Exception as exc:
             logger.error("on_plate_callback error: %s", exc)
@@ -222,30 +223,6 @@ class VideoService:
         x1, y1, x2, y2 = bbox
         color = (34, 197, 94) if event_type == "IN" else (59, 130, 246)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-
-        label = f" {plate_text}  [{event_type}] "
-        (lw, lh), baseline = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2
-        )
-        label_y1 = max(0, y1 - lh - baseline - 6)
-        label_y2 = y1
-        cv2.rectangle(
-            annotated,
-            (x1, label_y1),
-            (x1 + lw, label_y2),
-            color,
-            cv2.FILLED,
-        )
-        cv2.putText(
-            annotated,
-            label,
-            (x1, max(lh, y1 - baseline - 2)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
         return annotated
 
     def _draw_active_tracks(self, frame) -> "np.ndarray":
@@ -288,30 +265,9 @@ class VideoService:
             )
             x1, y1, x2, y2 = draw_bbox
             color = (34, 197, 94)
+            if track.get("is_logged"):
+                color = (0, 212, 170) # Đổi màu mượt (Accent color) nếu đã khóa
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-            if voted:
-                label = f" {voted} "
-                (lw, lh), baseline = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2
-                )
-                label_y1 = max(0, y1 - lh - baseline - 6)
-                cv2.rectangle(
-                    annotated,
-                    (x1, label_y1),
-                    (x1 + lw, y1),
-                    color,
-                    cv2.FILLED,
-                )
-                cv2.putText(
-                    annotated,
-                    label,
-                    (x1, max(lh, y1 - baseline - 2)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
         return annotated
 
     def _run(self) -> None:
@@ -384,7 +340,6 @@ class VideoService:
                     if best_track is not None and best_iou >= config.TRACK_IOU_THRESHOLD:
                         old_bbox = best_track["bbox"]
                         new_bbox = result["bbox"]
-                        # Tính velocity (pixel/frame) từ lần detect trước
                         last_f = best_track.get("last_detect_frame", frame_count)
                         elapsed_f = frame_count - last_f
                         if elapsed_f > 0:
@@ -398,7 +353,15 @@ class VideoService:
                         best_track["last_seen_time"]    = time.time()
                         best_track["last_frame"]        = frame.copy()
                         track_id = best_track["track_id"]
-                        voted_so_far = self._vote_plate(best_track["ocr_results"])
+                        
+                        voted_so_far = best_track.get("locked_plate") or self._vote_plate(best_track["ocr_results"])
+                        
+                        # Early lock
+                        if not best_track.get("is_logged"):
+                            if is_valid_format(voted_so_far) and best_track["ocr_results"].count(voted_so_far) >= config.MIN_OCR_DETECTIONS:
+                                best_track["locked_plate"] = voted_so_far
+                                self._finish_track(best_track, early_lock=True)
+                                
                     else:
                         track_id = self._next_track_id
                         self._next_track_id += 1
@@ -410,14 +373,21 @@ class VideoService:
                             "last_seen_time":    time.time(),
                             "total_frames":      1,
                             "last_frame":        frame.copy(),
-                            "velocity":          None,       # Chưa có dữ liệu velocity
+                            "velocity":          None,
                             "last_detect_frame": frame_count,
+                            "is_logged":         False,
+                            "locked_plate":      None,
                         }
+                        best_track = new_track
                         self._active_tracks.append(new_track)
                         voted_so_far = plate_text
                     
-                    # Gửi cập nhật thời gian thực về GUI (chưa lưu DB)
-                    est_event = self._determine_event(voted_so_far)
+                    is_logged = best_track.get("is_logged", False)
+                    if is_logged and "logged_event" in best_track:
+                        est_event = best_track["logged_event"]
+                    else:
+                        est_event = self._determine_event(voted_so_far)
+                    
                     detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     annotated = self._draw_bbox(
                         frame, result["bbox"], voted_so_far, est_event
@@ -432,7 +402,8 @@ class VideoService:
                             "event_type":      est_event,
                             "detect_time":     detect_time,
                             "annotated_frame": annotated,
-                            "is_final":        False,
+                            "is_final":        is_logged,
+                            "just_logged":     False,
                         })
                     except Exception as exc:
                         logger.error("on_plate_callback error: %s", exc)

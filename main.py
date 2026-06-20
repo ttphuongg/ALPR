@@ -29,7 +29,6 @@ logger.info("=" * 60)
 
 # Kiểm tra model files
 def _check_models() -> bool:
-    """Kiểm tra model files có tồn tại không. In cảnh báo nếu thiếu."""
     ok = True
     for name, path in [
         ("Plate detection (best.pt)",    config.MODEL_PLATE_PATH),
@@ -52,7 +51,7 @@ def main() -> None:
             "Vui lòng kiểm tra thư mục models/ và đảm bảo các file "
             "best.pt và best_ocr.pt đã được đặt đúng chỗ."
         )
-        # Vẫn tiếp tục khởi động để người dùng thấy thông báo lỗi trong GUI
+
 
     # Khởi tạo database
     from database.db_handler import DBHandler

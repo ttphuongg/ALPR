@@ -139,11 +139,11 @@ class ParkingApp(ctk.CTk):
             self._current_frame = frame
 
     def _on_plate_detected(self, result: dict) -> None:
-        is_final = result.get("is_final", False)
+        just_logged = result.get("just_logged", False)
 
         # Cập nhật GUI trên main thread
         self.after(0, self.info_panel.update_plate, result)
-        if is_final:
+        if just_logged:
             self.after(0, self._refresh_history)
 
     # Video frame polling (30fps)

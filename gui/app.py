@@ -1,0 +1,283 @@
+import time
+import threading
+import logging
+from tkinter import filedialog
+
+import customtkinter as ctk
+
+from gui.video_panel   import VideoPanel
+from gui.info_panel    import InfoPanel
+from gui.history_panel import HistoryPanel
+import config
+
+logger = logging.getLogger(__name__)
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+# Màu sắc toàn cục 
+_BG        = "#0d1117"
+_SURFACE   = "#161b22"
+_SURFACE2  = "#21262d"
+_ACCENT    = "#00d4aa"
+_TEXT      = "#e6edf3"
+_TEXT_MUTED= "#7d8590"
+
+
+class ParkingApp(ctk.CTk):
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        # Cấu hình cửa sổ 
+        self.title("Hệ Thống Quản Lý Bãi Đỗ Xe")
+        self.geometry("1380x820")
+        self.minsize(1100, 660)
+        self.configure(fg_color=_BG)
+
+        # Trạng thái nội bộ 
+        self._current_frame      = None
+        self._annotated_frame    = None
+        self._annotated_time     = 0.0
+        self._frame_lock         = threading.Lock()
+
+        # Services (khởi tạo lazy)
+        self._inference          = None   # PlateInference – load trong bg thread
+        self._video_service      = None   # VideoService
+
+        # Tạo widgets 
+        self._build_header()
+        self._build_body()
+
+        # Khởi động 
+        self.after(200, self._load_models_background)   # Load model sau 200ms
+        self.after(33,  self._poll_video_frame)          # Poll frame 30fps
+
+        # Đóng cửa sổ
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # Xây dựng giao diện 
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(
+            self, fg_color=_SURFACE, corner_radius=0, height=58
+        )
+        header.pack(fill="x", side="top")
+        header.pack_propagate(False)
+
+        # Logo + tiêu đề
+        left_box = ctk.CTkFrame(header, fg_color="transparent")
+        left_box.pack(side="left", padx=18, pady=0)
+
+        ctk.CTkLabel(
+            left_box,
+            text="HỆ THỐNG QUẢN LÝ BÃI ĐỖ XE",
+            font=("Segoe UI", 17, "bold"),
+            text_color=_ACCENT,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            left_box,
+            text="  |  Smart Parking Management",
+            font=("Segoe UI", 11),
+            text_color=_TEXT_MUTED,
+        ).pack(side="left", padx=(4, 0))
+
+        # Nhãn trạng thái hệ thống
+        self._status_label = ctk.CTkLabel(
+            header,
+            text="⏳  Đang khởi tạo...",
+            font=("Segoe UI", 11),
+            text_color=_TEXT_MUTED,
+        )
+        self._status_label.pack(side="right", padx=18)
+
+    def _build_body(self) -> None:
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12, pady=10)
+
+        # Cột trái: Video 
+        left_col = ctk.CTkFrame(body, fg_color="transparent")
+        left_col.pack(side="left", fill="both", expand=True)
+
+        self.video_panel = VideoPanel(
+            left_col,
+            on_select_video=self._on_select_video,
+            on_start=self._on_start,
+            on_stop=self._on_stop,
+        )
+        self.video_panel.pack(fill="both", expand=True)
+
+        # Cột phải: Info + History 
+        right_col = ctk.CTkFrame(body, fg_color="transparent", width=490)
+        right_col.pack(side="right", fill="both", padx=(12, 0))
+        right_col.pack_propagate(False)
+
+        self.info_panel = InfoPanel(right_col)
+        self.info_panel.pack(fill="x")
+
+        self.history_panel = HistoryPanel(
+            right_col, on_clear=self._on_clear_history
+        )
+        self.history_panel.pack(fill="both", expand=True, pady=(10, 0))
+
+        # Nạp dữ liệu lịch sử ban đầu từ DB
+        self._refresh_history()
+
+    # Load models
+
+    def _load_models_background(self) -> None:
+        def _worker():
+            from services.inference import PlateInference
+            self._set_status("⏳  Đang tải models AI (lần đầu có thể mất vài giây)...")
+            try:
+                inference = PlateInference()
+                self._inference = inference
+                self.after(0, lambda: self._set_status(
+                    "Sẵn sàng – Chọn video và nhấn [Bắt Đầu]"
+                ))
+                logger.info("PlateInference loaded successfully.")
+            except Exception as exc:
+                logger.error("Model load failed: %s", exc)
+                self.after(0, lambda: self._set_status(
+                    f"Lỗi tải model: {exc}"
+                ))
+
+        t = threading.Thread(target=_worker, name="ModelLoader", daemon=True)
+        t.start()
+
+    # Callbacks từ VideoService
+
+    def _on_frame_received(self, frame) -> None:
+        with self._frame_lock:
+            self._current_frame = frame
+
+    def _on_plate_detected(self, result: dict) -> None:
+        is_final = result.get("is_final", False)
+        with self._frame_lock:
+            if result.get("annotated_frame") is not None:
+                self._annotated_frame = result.get("annotated_frame")
+                self._annotated_time  = time.time()
+
+        # Cập nhật GUI trên main thread
+        self.after(0, self.info_panel.update_plate, result)
+        if is_final:
+            self.after(0, self._refresh_history)
+
+    # Video frame polling (30fps)
+
+    def _poll_video_frame(self) -> None:
+        with self._frame_lock:
+            elapsed   = time.time() - self._annotated_time
+            use_annot = (
+                self._annotated_frame is not None
+                and elapsed < config.ANNOTATED_DISPLAY_DURATION
+            )
+            frame = self._annotated_frame if use_annot else self._current_frame
+
+        if frame is not None:
+            self.video_panel.update_frame(frame)
+
+        self.after(33, self._poll_video_frame)
+
+    # Refresh dữ liệu 
+
+    def _refresh_history(self) -> None:
+        """Cập nhật bảng lịch sử và thẻ thống kê từ DB."""
+        from database.db_handler import DBHandler
+        # Dùng instance DB toàn cục (đã khởi tạo trong main.py)
+        db = self._get_db()
+        if db:
+            logs  = db.get_all_logs()
+            stats = db.get_stats()
+            self.history_panel.update_table(logs)
+            self.history_panel.update_stats(stats)
+
+    # Nút điều khiển 
+
+    def _on_select_video(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Chọn file video",
+            filetypes=[
+                ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv"),
+                ("All files",   "*.*"),
+            ],
+        )
+        if path:
+            # Tự động dừng video cũ nếu đang chạy
+            if self._video_service and self._video_service.is_running():
+                self._on_stop()
+
+            self.video_panel.set_video_path(path)
+            filename = path.replace("\\", "/").split("/")[-1]
+            self._set_status(f"Video: {filename} – Sẵn sàng")
+            logger.info("Video selected (old video stopped): %s", path)
+
+    def _on_start(self, video_path: str) -> None:
+        if not video_path:
+            self._set_status("Vui lòng chọn video trước!")
+            return
+
+        if self._inference is None:
+            self._set_status("Models AI chưa tải xong, vui lòng đợi...")
+            return
+
+        if self._video_service and self._video_service.is_running():
+            self._set_status("Video đang phát...")
+            return
+
+        from services.video_service import VideoService
+        db = self._get_db()
+        if db is None:
+            self._set_status("Lỗi kết nối database!")
+            return
+
+        self._video_service = VideoService(
+            inference         = self._inference,
+            db_handler        = db,
+            on_frame_callback = self._on_frame_received,
+            on_plate_callback = self._on_plate_detected,
+        )
+        self._video_service.set_video(video_path)
+        self._video_service.start()
+        self._set_status("Đang phát video và nhận diện biển số...")
+        logger.info("VideoService started for: %s", video_path)
+
+    def _on_stop(self) -> None:
+        if self._video_service:
+            self._video_service.stop()
+            self._video_service = None
+
+        with self._frame_lock:
+            self._annotated_frame = None
+            self._current_frame   = None
+
+        self.video_panel.show_placeholder()
+        self._set_status("Đã dừng")
+        logger.info("VideoService stopped.")
+
+    def _on_clear_history(self) -> None:
+        db = self._get_db()
+        if db and db.clear_all_logs():
+            self._refresh_history()
+            self.info_panel.clear()
+            self._set_status("Đã xóa lịch sử nhận diện")
+            logger.info("All logs cleared by user.")
+
+    # Tiện ích 
+
+    def set_db(self, db) -> None:
+
+        self._db = db
+
+    def _get_db(self):
+        return getattr(self, "_db", None)
+
+    def _set_status(self, msg: str) -> None:
+        self._status_label.configure(text=msg)
+
+    # Đóng ứng dụng 
+
+    def _on_close(self) -> None:
+        logger.info("Application closing...")
+        self._on_stop()
+        self.destroy()

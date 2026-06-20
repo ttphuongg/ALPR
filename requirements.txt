@@ -1,0 +1,6 @@
+#   pip install -r requirements.txt
+
+customtkinter>=5.2.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+ultralytics>=8.0.0

@@ -35,7 +35,9 @@ class VideoPanel(ctk.CTkFrame):
         self._on_start        = on_start
         self._on_stop         = on_stop
         self._video_path: str | None = None
+        self._image_path: str | None = None  # Đường dẫn ảnh tĩnh
         self._photo           = None        # Giữ reference để tránh GC
+        self._thumbnail_frame = None        # Frame thumbnail để hiển thị lại sau khi dừng
         self._video_started   = False
 
         self._build()
@@ -89,20 +91,20 @@ class VideoPanel(ctk.CTkFrame):
         ).pack()
         ctk.CTkLabel(
             self._placeholder_frame,
-            text="Chưa có video",
+            text="Chưa có video / ảnh",
             font=("Segoe UI", 16, "bold"),
             text_color="#30363d",
         ).pack(pady=(4, 2))
         ctk.CTkLabel(
             self._placeholder_frame,
-            text="Nhấn [Chọn Video] để bắt đầu",
+            text="Nhấn [Chọn File] để bắt đầu",
             font=("Segoe UI", 11),
             text_color="#30363d",
         ).pack()
 
         self._btn_select = ctk.CTkButton(
             ctrl_bar,
-            text="📂  Chọn Video",
+            text="📂  Chọn File",
             font=("Segoe UI", 12, "bold"),
             fg_color=_BTN_SEL,
             hover_color=_BTN_SEL_H,
@@ -152,18 +154,34 @@ class VideoPanel(ctk.CTkFrame):
 
     def set_video_path(self, path: str) -> None:
         self._video_path = path
+        self._image_path = None
         filename = path.replace("\\", "/").split("/")[-1]
-        self._path_label.configure(text=f"📄  {filename}")
-        self._video_started = False  
+        self._path_label.configure(text=f"🎬  {filename}")
+        self._video_started = False
 
         if path:
             cap = cv2.VideoCapture(path)
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret:
+                    self._thumbnail_frame = frame.copy()  # Lưu thumbnail
                     self.update_frame(frame)
                     self._video_started = False
                 cap.release()
+
+    def set_image_path(self, path: str) -> None:
+        """Hiển thị một ảnh tĩnh lên panel."""
+        self._image_path = path
+        self._video_path = None
+        filename = path.replace("\\", "/").split("/")[-1]
+        self._path_label.configure(text=f"🖼️  {filename}")
+        self._video_started = False
+
+        frame = cv2.imread(path)
+        if frame is not None:
+            self._thumbnail_frame = frame.copy()  # Lưu thumbnail
+            self.update_frame(frame)
+            self._video_started = False
 
     def update_frame(self, frame: np.ndarray) -> None:
         try:
@@ -202,16 +220,12 @@ class VideoPanel(ctk.CTkFrame):
             pass
 
     def show_placeholder(self) -> None:
-        if self._video_path:
-            cap = cv2.VideoCapture(self._video_path)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret:
-                    self.update_frame(frame)
-                    self._video_started = False
-                    cap.release()
-                    return
-                cap.release()
+        """Sau khi dừng: hiển thị thumbnail file đang chọn (ảnh/frame đầu video),
+        hoặc placeholder trống nếu chưa có file nào."""
+        if self._thumbnail_frame is not None:
+            self.update_frame(self._thumbnail_frame)
+            self._video_started = False
+            return
 
         self._video_label.configure(image=None, text="")
         self._photo = None

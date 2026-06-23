@@ -155,7 +155,7 @@ class HistoryPanel(ctk.CTkFrame):
         try:
             style.theme_use("clam")
         except tk.TclError:
-            pass  # theme đã được áp dụng
+            pass  
 
         style.configure(
             "Parking.Treeview",

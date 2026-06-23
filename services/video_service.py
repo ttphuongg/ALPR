@@ -90,7 +90,7 @@ class VideoService:
         if not ocr_results:
             return ""
         
-        # 1. Tìm độ dài chuỗi OCR xuất hiện nhiều nhất trong track (độ dài trội)
+        # Tìm độ dài chuỗi OCR xuất hiện nhiều nhất trong track
         lengths = [len(r) for r in ocr_results]
         length_counts = {}
         for l in lengths:
@@ -98,10 +98,10 @@ class VideoService:
         
         dominant_length = max(length_counts, key=length_counts.get)
         
-        # 2. Lọc danh sách OCR chỉ giữ lại các chuỗi có độ dài trội đó
+        # Lọc danh sách OCR chỉ giữ lại các chuỗi có độ dài trội đó
         filtered_results = [r for r in ocr_results if len(r) == dominant_length]
         
-        # 3. Bỏ phiếu theo từng vị trí ký tự
+        # Bỏ phiếu theo từng vị trí ký tự
         voted_chars = []
         for i in range(dominant_length):
             chars_at_pos = [r[i] for r in filtered_results]
@@ -119,7 +119,6 @@ class VideoService:
 
     @staticmethod
     def _normalize_plate(plate: str) -> str:
-        """Bỏ dấu gạch ngang / chấm / khoảng trắng để so sánh thuần ký tự."""
         return re.sub(r"[^A-Z0-9]", "", plate.upper())
 
     def _finish_track(self, track: dict, early_lock: bool = False) -> None:
@@ -151,7 +150,7 @@ class VideoService:
         event_type = self._determine_event(voted_plate)
         detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- Anti-Duplicate Layer ---
+        # Anti-Duplicate Layer 
         now = time.time()
         voted_norm = self._normalize_plate(voted_plate)
         duplicate_of = None
@@ -225,7 +224,7 @@ class VideoService:
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
         return annotated
 
-    def _draw_active_tracks(self, frame) -> "np.ndarray":
+    def _draw_active_tracks(self, frame):
         """Vẽ bbox của tất cả track đang active lên frame.
 
         Sử dụng velocity để dự đoán vị trí bbox hiện tại giữa các YOLO detection,
@@ -242,10 +241,10 @@ class VideoService:
             if bbox is None:
                 continue
 
-            # --- Dự đoán vị trí bằng velocity ---
+            # Dự đoán vị trí bằng velocity
             velocity = track.get("velocity")          # (vx1,vy1,vx2,vy2) pixel/frame
             last_f   = track.get("last_detect_frame", cur_f)
-            frames_elapsed = min(cur_f - last_f, config.FRAME_SKIP)  # cap để không bay lê
+            frames_elapsed = min(cur_f - last_f, config.FRAME_SKIP) 
 
             if velocity is not None and frames_elapsed > 0:
                 vx1, vy1, vx2, vy2 = velocity
@@ -256,7 +255,6 @@ class VideoService:
                 draw_bbox = [x1, y1, x2, y2]
             else:
                 draw_bbox = bbox
-            # ------------------------------------
 
             voted = (
                 self._vote_plate(track["ocr_results"])
@@ -266,7 +264,7 @@ class VideoService:
             x1, y1, x2, y2 = draw_bbox
             color = (34, 197, 94)
             if track.get("is_logged"):
-                color = (0, 212, 170) # Đổi màu mượt (Accent color) nếu đã khóa
+                color = (0, 212, 170) 
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
         return annotated
 
@@ -280,7 +278,7 @@ class VideoService:
         fps = fps if fps > 0 else 25.0
         frame_delay = 1.0 / fps
         frame_count = 0
-        self._frame_count = 0  # Dùng bởi _draw_active_tracks
+        self._frame_count = 0  
 
         logger.info("Video opened. FPS=%.1f, path=%s", fps, self._video_path)
 

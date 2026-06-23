@@ -37,6 +37,8 @@ class ParkingApp(ctk.CTk):
         # Trạng thái nội bộ 
         self._current_frame      = None
         self._frame_lock         = threading.Lock()
+        self._is_image_mode      = False   # True khi chọn ảnh tĩnh
+        self._selected_path      = None    # Đường dẫn file đang chọn
 
         # Services (khởi tạo lazy)
         self._inference          = None   # PlateInference – load trong bg thread
@@ -173,24 +175,122 @@ class ParkingApp(ctk.CTk):
     # Nút điều khiển 
 
     def _on_select_video(self) -> None:
+        IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
         path = filedialog.askopenfilename(
-            title="Chọn file video",
+            title="Chọn ảnh hoặc video",
             filetypes=[
-                ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv"),
-                ("All files",   "*.*"),
+                ("Video / ảnh",   "*.mp4 *.avi *.mov *.mkv *.wmv "
+                                  "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp"),
+                ("Video files",   "*.mp4 *.avi *.mov *.mkv *.wmv"),
+                ("Image files",   "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp"),
+                ("All files",     "*.*"),
             ],
         )
-        if path:
-            # Tự động dừng video cũ nếu đang chạy
-            if self._video_service and self._video_service.is_running():
-                self._on_stop()
+        if not path:
+            return
 
+        # Dừng video cũ nếu đang chạy
+        if self._video_service and self._video_service.is_running():
+            self._on_stop()
+
+        self._selected_path = path
+        ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+
+        if ext in IMAGE_EXTS:
+            # --- Chế độ ảnh tĩnh ---
+            self._is_image_mode = True
+            self.video_panel.set_image_path(path)
+            filename = path.replace("\\", "/").split("/")[-1]
+            self._set_status(f"Ảnh: {filename} – Đang nhận dạng...")
+            logger.info("Image selected: %s", path)
+            # Chạy inference trong background thread
+            threading.Thread(
+                target=self._process_image,
+                args=(path,),
+                name="ImageInference",
+                daemon=True,
+            ).start()
+        else:
+            # --- Chế độ video ---
+            self._is_image_mode = False
             self.video_panel.set_video_path(path)
             filename = path.replace("\\", "/").split("/")[-1]
             self._set_status(f"Video: {filename} – Sẵn sàng")
-            logger.info("Video selected (old video stopped): %s", path)
+            logger.info("Video selected: %s", path)
+
+    def _process_image(self, path: str) -> None:
+        """Chạy inference trên 1 ảnh tĩnh, gọi callback như video."""
+        import cv2
+        if self._inference is None:
+            self.after(0, lambda: self._set_status(
+                "Models chưa tải xong, vui lòng đợi rồi thử lại."
+            ))
+            return
+        frame = cv2.imread(path)
+        if frame is None:
+            self.after(0, lambda: self._set_status("Ảnh không hợp lệ!"))
+            return
+        try:
+            result = self._inference.process_frame(frame)
+        except Exception as exc:
+            logger.error("Image inference error: %s", exc)
+            self.after(0, lambda: self._set_status(f"Lỗi nhận dạng: {exc}"))
+            return
+
+        filename = path.replace("\\", "/").split("/")[-1]
+        if result and result.get("plate"):
+            plate = result["plate"]
+            from datetime import datetime
+            detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Vẽ bbox lên ảnh
+            annotated = self._draw_bbox_on_frame(frame, result)
+            # Huần: gửi lên GUI
+            self.after(0, lambda: self.video_panel.update_frame(annotated))
+            from services.video_service import VideoService
+            from database.db_handler import DBHandler
+            db = self._get_db()
+            event_type = "IN"
+            if db:
+                last_event = db.get_last_event(plate)
+                event_type = "IN" if (last_event is None or last_event == "OUT") else "OUT"
+                db.insert_log(plate, event_type, detect_time)
+                self.after(0, self._refresh_history)
+            payload = {
+                "track_id":        0,
+                "plate":           plate,
+                "current_ocr":     plate,
+                "bbox":            result.get("bbox"),
+                "event_type":      event_type,
+                "detect_time":     detect_time,
+                "annotated_frame": annotated,
+                "is_final":        True,
+                "just_logged":     True,
+            }
+            self.after(0, self.info_panel.update_plate, payload)
+            self.after(0, lambda: self._set_status(
+                f"Ảnh: {filename} – Phát hiện: {plate} ({event_type})"
+            ))
+        else:
+            self.after(0, lambda: self._set_status(
+                f"Ảnh: {filename} – Không phát hiện biển số"
+            ))
+
+    @staticmethod
+    def _draw_bbox_on_frame(frame, result: dict):
+        """Vẽ bbox lên frame tạo ảnh annotated trả về."""
+        import cv2
+        annotated = frame.copy()
+        bbox = result.get("bbox")
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (34, 197, 94), 2)
+        return annotated
 
     def _on_start(self, video_path: str) -> None:
+        if self._is_image_mode:
+            self._set_status("Đây là chế độ ảnh – Nhấn [Chọn File] để chọn video.")
+            return
+
         if not video_path:
             self._set_status("Vui lòng chọn video trước!")
             return

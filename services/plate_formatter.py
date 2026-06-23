@@ -5,19 +5,6 @@ logger = logging.getLogger(__name__)
 
 
 def format_vietnamese_plate(raw_chars, is_two_lines: bool) -> str:
-    """Chuẩn hoá chuỗi OCR thành định dạng biển số Việt Nam.
-
-    Args:
-        raw_chars: Nếu ``is_two_lines=True`` thì là list[str] gồm 2 dòng
-                   (dòng trên, dòng dưới). Nếu False thì là str hoặc list[str]
-                   một phần tử.
-        is_two_lines: True khi biển số 2 dòng (xe máy).
-
-    Returns:
-        Chuỗi biển số đã được format chuẩn.
-    """
-    # Bước 1: Lọc sạch rác, gộp thành 1 chuỗi duy nhất,
-    #         chỉ lấy chữ và số, in hoa toàn bộ.
     if is_two_lines and isinstance(raw_chars, list) and len(raw_chars) >= 2:
         text = (
             "".join(c for c in raw_chars[0] if c.isalnum())

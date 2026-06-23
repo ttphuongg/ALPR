@@ -148,7 +148,6 @@ class ParkingApp(ctk.CTk):
         if just_logged:
             self.after(0, self._refresh_history)
 
-    # Video frame polling (30fps)
 
     def _poll_video_frame(self) -> None:
         with self._frame_lock:

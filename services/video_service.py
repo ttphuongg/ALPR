@@ -30,9 +30,8 @@ class VideoService:
         self._thread: threading.Thread | None = None
         self._stop_event       = threading.Event()
 
-        # Trạng thái tracking
-        self._active_tracks: list[dict] = []
-        self._next_track_id: int = 1
+        # Trạng thái tracking: key = track_id (từ ByteTrack), value = track dict
+        self._active_tracks: dict[int, dict] = {}
 
         # Anti-Duplicate Layer: {plate_text: last_saved_time}
         self._recent_plates: dict[str, float] = {}
@@ -67,24 +66,6 @@ class VideoService:
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
-
-    def _calculate_iou(self, boxA: list[int], boxB: list[int]) -> float:
-        xA = max(boxA[0], boxB[0])
-        yA = max(boxA[1], boxB[1])
-        xB = min(boxA[2], boxB[2])
-        yB = min(boxA[3], boxB[3])
-        
-        interWidth = max(0, xB - xA)
-        interHeight = max(0, yB - yA)
-        interArea = interWidth * interHeight
-        
-        boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-        boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-        
-        unionArea = boxAArea + boxBArea - interArea
-        if unionArea == 0:
-            return 0.0
-        return interArea / float(unionArea)
 
     def _vote_plate(self, ocr_results: list[str]) -> str:
         if not ocr_results:
@@ -198,15 +179,15 @@ class VideoService:
 
     def _cleanup_tracks(self) -> None:
         now = time.time()
-        still_active = []
+        expired_ids = []
         
-        for track in self._active_tracks:
+        for track_id, track in self._active_tracks.items():
             if (now - track["last_seen_time"]) > config.TRACK_TIMEOUT:
                 self._finish_track(track)
-            else:
-                still_active.append(track)
+                expired_ids.append(track_id)
                 
-        self._active_tracks = still_active
+        for tid in expired_ids:
+            del self._active_tracks[tid]
 
     def _draw_bbox(
         self,
@@ -226,35 +207,18 @@ class VideoService:
 
     def _draw_active_tracks(self, frame):
         """Vẽ bbox của tất cả track đang active lên frame.
-
-        Sử dụng velocity để dự đoán vị trí bbox hiện tại giữa các YOLO detection,
-        giúp bbox trượt mượt theo xe thay vì đứng yên.
         """
         if not self._active_tracks:
             return frame.copy()
 
         annotated = frame.copy()
-        cur_f = self._frame_count
 
-        for track in self._active_tracks:
+        for track in self._active_tracks.values():
             bbox = track.get("bbox")
             if bbox is None:
                 continue
 
-            # Dự đoán vị trí bằng velocity
-            velocity = track.get("velocity")          # (vx1,vy1,vx2,vy2) pixel/frame
-            last_f   = track.get("last_detect_frame", cur_f)
-            frames_elapsed = min(cur_f - last_f, config.FRAME_SKIP) 
-
-            if velocity is not None and frames_elapsed > 0:
-                vx1, vy1, vx2, vy2 = velocity
-                x1 = int(bbox[0] + vx1 * frames_elapsed)
-                y1 = int(bbox[1] + vy1 * frames_elapsed)
-                x2 = int(bbox[2] + vx2 * frames_elapsed)
-                y2 = int(bbox[3] + vy2 * frames_elapsed)
-                draw_bbox = [x1, y1, x2, y2]
-            else:
-                draw_bbox = bbox
+            draw_bbox = bbox
 
             voted = (
                 self._vote_plate(track["ocr_results"])
@@ -278,7 +242,10 @@ class VideoService:
         fps = fps if fps > 0 else 25.0
         frame_delay = 1.0 / fps
         frame_count = 0
-        self._frame_count = 0  
+        
+        # Reset tracker state để track_id không nối tiếp video trước đó
+        if hasattr(self.inference, 'reset_tracker'):
+            self.inference.reset_tracker()
 
         logger.info("Video opened. FPS=%.1f, path=%s", fps, self._video_path)
 
@@ -296,115 +263,76 @@ class VideoService:
                     break
 
             # Cập nhật số frame đếm được cho các track đang active
-            for track in self._active_tracks:
+            for track in self._active_tracks.values():
                 track["total_frames"] += 1
 
-            self._frame_count = frame_count
+            # Chạy YOLO mỗi frame để track tốt hơn
+            try:
+                result = self.inference.process_frame(frame)
+            except Exception as exc:
+                logger.error("Inference error on frame %d: %s", frame_count, exc)
+                result = None
 
-            # Chạy YOLO TRƯỚC khi vẽ → bbox luôn là vị trí mới nhất khi gửi GUI
-            if frame_count % config.FRAME_SKIP == 0:
+            if result and result.get("plate") and result.get("track_id") is not None:
+                plate_text = result["plate"]
+                track_id = result["track_id"]
+                bbox = result["bbox"]
+                
+                if track_id in self._active_tracks:
+                    # Cập nhật track hiện tại
+                    best_track = self._active_tracks[track_id]
+                    best_track["bbox"]              = bbox
+                    best_track["ocr_results"].append(plate_text)
+                    best_track["last_seen_time"]    = time.time()
+                    best_track["last_frame"]        = frame.copy()
+                else:
+                    # Tạo track mới
+                    best_track = {
+                        "track_id":          track_id,
+                        "bbox":              bbox,
+                        "ocr_results":       [plate_text],
+                        "start_time":        time.time(),
+                        "last_seen_time":    time.time(),
+                        "total_frames":      1,
+                        "last_frame":        frame.copy(),
+                        "is_logged":         False,
+                        "locked_plate":      None,
+                    }
+                    self._active_tracks[track_id] = best_track
+
+                voted_so_far = best_track.get("locked_plate") or self._vote_plate(best_track["ocr_results"])
+                
+                # Early lock
+                if not best_track.get("is_logged"):
+                    if is_valid_format(voted_so_far) and best_track["ocr_results"].count(voted_so_far) >= config.MIN_OCR_DETECTIONS:
+                        best_track["locked_plate"] = voted_so_far
+                        self._finish_track(best_track, early_lock=True)
+
+                is_logged = best_track.get("is_logged", False)
+                if is_logged and "logged_event" in best_track:
+                    est_event = best_track["logged_event"]
+                else:
+                    est_event = self._determine_event(voted_so_far)
+                
+                detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                annotated = self._draw_bbox(
+                    frame, bbox, voted_so_far, est_event
+                )
+                
                 try:
-                    result = self.inference.process_frame(frame)
+                    self._on_plate({
+                        "track_id":        track_id,
+                        "plate":           voted_so_far,
+                        "current_ocr":     plate_text,
+                        "bbox":            bbox,
+                        "event_type":      est_event,
+                        "detect_time":     detect_time,
+                        "annotated_frame": annotated,
+                        "is_final":        is_logged,
+                        "just_logged":     False,
+                    })
                 except Exception as exc:
-                    logger.error("Inference error on frame %d: %s", frame_count, exc)
-                    result = None
-
-                if result and result.get("plate"):
-                    plate_text = result["plate"]
-                    
-                    # Tìm track khớp nhất bằng IoU với bbox DỰ ĐOÁN
-                    best_track = None
-                    best_iou = -1.0
-                    for track in self._active_tracks:
-                        match_bbox = track["bbox"]
-                        velocity = track.get("velocity")
-                        last_f = track.get("last_detect_frame", frame_count)
-                        frames_elapsed = frame_count - last_f
-                        
-                        if velocity is not None and frames_elapsed > 0:
-                            vx1, vy1, vx2, vy2 = velocity
-                            match_bbox = [
-                                match_bbox[0] + vx1 * frames_elapsed,
-                                match_bbox[1] + vy1 * frames_elapsed,
-                                match_bbox[2] + vx2 * frames_elapsed,
-                                match_bbox[3] + vy2 * frames_elapsed,
-                            ]
-                            
-                        iou = self._calculate_iou(result["bbox"], match_bbox)
-                        if iou > best_iou:
-                            best_iou = iou
-                            best_track = track
-                    
-                    if best_track is not None and best_iou >= config.TRACK_IOU_THRESHOLD:
-                        old_bbox = best_track["bbox"]
-                        new_bbox = result["bbox"]
-                        last_f = best_track.get("last_detect_frame", frame_count)
-                        elapsed_f = frame_count - last_f
-                        if elapsed_f > 0:
-                            best_track["velocity"] = [
-                                (new_bbox[i] - old_bbox[i]) / elapsed_f
-                                for i in range(4)
-                            ]
-                        best_track["bbox"]              = new_bbox
-                        best_track["last_detect_frame"] = frame_count
-                        best_track["ocr_results"].append(plate_text)
-                        best_track["last_seen_time"]    = time.time()
-                        best_track["last_frame"]        = frame.copy()
-                        track_id = best_track["track_id"]
-                        
-                        voted_so_far = best_track.get("locked_plate") or self._vote_plate(best_track["ocr_results"])
-                        
-                        # Early lock
-                        if not best_track.get("is_logged"):
-                            if is_valid_format(voted_so_far) and best_track["ocr_results"].count(voted_so_far) >= config.MIN_OCR_DETECTIONS:
-                                best_track["locked_plate"] = voted_so_far
-                                self._finish_track(best_track, early_lock=True)
-                                
-                    else:
-                        track_id = self._next_track_id
-                        self._next_track_id += 1
-                        new_track = {
-                            "track_id":          track_id,
-                            "bbox":              result["bbox"],
-                            "ocr_results":       [plate_text],
-                            "start_time":        time.time(),
-                            "last_seen_time":    time.time(),
-                            "total_frames":      1,
-                            "last_frame":        frame.copy(),
-                            "velocity":          None,
-                            "last_detect_frame": frame_count,
-                            "is_logged":         False,
-                            "locked_plate":      None,
-                        }
-                        best_track = new_track
-                        self._active_tracks.append(new_track)
-                        voted_so_far = plate_text
-                    
-                    is_logged = best_track.get("is_logged", False)
-                    if is_logged and "logged_event" in best_track:
-                        est_event = best_track["logged_event"]
-                    else:
-                        est_event = self._determine_event(voted_so_far)
-                    
-                    detect_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    annotated = self._draw_bbox(
-                        frame, result["bbox"], voted_so_far, est_event
-                    )
-                    
-                    try:
-                        self._on_plate({
-                            "track_id":        track_id,
-                            "plate":           voted_so_far,
-                            "current_ocr":     plate_text,
-                            "bbox":            result["bbox"],
-                            "event_type":      est_event,
-                            "detect_time":     detect_time,
-                            "annotated_frame": annotated,
-                            "is_final":        is_logged,
-                            "just_logged":     False,
-                        })
-                    except Exception as exc:
-                        logger.error("on_plate_callback error: %s", exc)
+                    logger.error("on_plate_callback error: %s", exc)
 
             # Vẽ bbox (đã cập nhật từ YOLO) và gửi tới GUI
             try:
@@ -419,7 +347,7 @@ class VideoService:
             time.sleep(frame_delay)
 
         # Chốt các track còn đang chạy khi dừng hoặc hết video
-        for track in self._active_tracks:
+        for track in self._active_tracks.values():
             self._finish_track(track)
         self._active_tracks.clear()
 
